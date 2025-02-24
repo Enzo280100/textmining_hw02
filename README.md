@@ -57,7 +57,7 @@ pip install -r requirements.txt
 - Wordclouds are generated before and after preprocessing.
 - Terms associated with higher prices are explored.
 
-### 3. DiD Regression
+### 3. 
 - The impact of the event on prices is estimated using a difference-in-differences model.
 - Additional controls based on text descriptions are included.
 - Heterogeneous effects are explored according to accommodation quality.
