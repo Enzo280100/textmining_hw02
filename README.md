@@ -14,6 +14,7 @@ textmining_hw02/
 |   |-- __pycache__.py          
 |   |-- categories.py           # Create new categories
 |   |-- preprocessing.py        # Data processing
+|-- HW2_TEXT_MINING.pdf         # PDF with all our results and analysis
 |-- hw02.ipynb                  # Principal Notebook
 |-- README.md                   # Description the project structure
 |-- requirements.txt            # Dependencies required to run
