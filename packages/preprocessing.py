@@ -1,91 +1,109 @@
 import re
-from sklearn.base import BaseEstimator, TransformerMixin
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer, SnowballStemmer
+import pandas as pd
 import nltk
+from nltk.corpus import stopwords, wordnet
+from nltk.tokenize import word_tokenize
+from nltk.tag import pos_tag
+from nltk.stem import WordNetLemmatizer
+from collections import Counter
+from tabulate import tabulate
+import swifter
+from tqdm import tqdm
 
+def get_wordnet_pos(treebank_tag):
+    """Converts POS tags to WordNet format for lemmatization"""
+    if treebank_tag.startswith('J'):
+        return wordnet.ADJ
+    elif treebank_tag.startswith('V'):
+        return wordnet.VERB
+    elif treebank_tag.startswith('N'):
+        return wordnet.NOUN
+    elif treebank_tag.startswith('R'):
+        return wordnet.ADV
+    else:
+        return wordnet.NOUN
 
-class Tokenizer(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None):
-        return self
+def build_complete_stopwords(corpus, top_n=50, min_length=3):
+    """Build comprehensive stopwords set with additional filtering"""
+    english_stops = set(stopwords.words('english'))
+    domain_stops = {
+        'news', 'report', 'reports', 'breaking', 'update', 'reuters', 'said',
+        'article', 'coverage', 'video', 'audio', 'bloomberg', 'cnn', 'bbc',
+        'times', 'today', 'york', 'associated', 'press', 'ap', 'click', 'read',
+        'st', 'nd', 'rd', 'th', 'the', 'etc', 'ie', 'eg'
+    }
+    
+    all_tokens = []
+    for doc in corpus.dropna():
+        doc_clean = re.sub(r'[^\w\s]', ' ', doc.lower())
+        doc_clean = re.sub(r'\d+', ' ', doc_clean)
+        doc_clean = re.sub(r'\s+', ' ', doc_clean)
+        
+        tokens = word_tokenize(doc_clean)
+        tokens = [t for t in tokens if len(t) >= min_length]
+        all_tokens.extend(tokens)
+    
+    freq_counts = Counter(all_tokens)
+    most_common_tokens = {word for word, _ in freq_counts.most_common(top_n)}
+    full_stopwords = english_stops.union(domain_stops, most_common_tokens)
+    
+    return full_stopwords
 
-    def transform(self, X):
-        '''
-        Tokenize the text: split the text into words.
-        Example: tokenize('The cat is on the mat.') -> ['The', 'cat', 'is', 'on', 'the', 'mat.']
-        '''
-        return X.apply(word_tokenize)
+def preprocess_text(text, stopwords_set, lemmatizer, min_token_length=3):
+    """Enhanced text preprocessing with better token filtering"""
+    if pd.isna(text):
+        return ''
 
-class Normalizer(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None):
-        return self
+    text = re.sub(r'https?://\S+|www\.\S+', ' ', text.lower())
+    text = re.sub(r'\d+(st|nd|rd|th)', ' ', text)
+    text = re.sub(r'[^\w\s]', ' ', text)
+    text = re.sub(r'\b\d+\b', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
 
-    def transform(self, X):
-        '''
-        Normalize the tokens: convert to lowercase and remove punctuation.
-        Example: normalize(['The', 'cat', 'is', 'on', 'the', 'mat.']) -> ['the', 'cat', 'is', 'on', 'the', 'mat']
-        '''
-        return X.apply(lambda tokens: [re.sub(r'[^\w\s]', '', token.lower()) for token in tokens])
+    tokens = word_tokenize(text)
+    tokens = [t for t in tokens if t not in stopwords_set and len(t) >= min_token_length]
+    
+    if not tokens:
+        return ''
+    
+    pos_tags = pos_tag(tokens)
+    lemmatized_tokens = [
+        lemmatizer.lemmatize(token, get_wordnet_pos(pos))
+        for token, pos in pos_tags
+    ]
+    
+    result_tokens = [t for t in lemmatized_tokens if len(t) >= min_token_length and t != 'th']
+    return ' '.join(result_tokens)
 
-class RemoveStopwords(BaseEstimator, TransformerMixin):
-    def __init__(self, language='english'):
-        '''
-        Initialize with a set of stopwords for the specified language.
-        If no language is specified, the default is English.
-        '''
-        self.stopwords = set(stopwords.words(language))
+def process_text_pipeline(df, text_column='full_content', batch_size=1000):
+    """Complete text processing pipeline for a DataFrame"""
+    FULL_STOPWORDS = build_complete_stopwords(df[text_column], top_n=50, min_length=3)
+    LEMMATIZER = WordNetLemmatizer()
+    
+    df['processed_content'] = df[text_column].swifter.apply(
+        lambda x: preprocess_text(
+            x, stopwords_set=FULL_STOPWORDS, lemmatizer=LEMMATIZER, min_token_length=3
+        )
+    )
+    
+    # Create the preview
+    df['processed_preview'] = df['processed_content'].str.slice(0, 200) + \
+                              df['processed_content'].swifter.apply(lambda x: "..." if len(x) > 200 else "")
+    
+    # Check for empty results and tokens like "th"
+    th_count = df['processed_content'].str.contains(r'\bth\b').sum()
+    empty_count = (df['processed_content'] == '').sum()
+    short_count = (df['processed_content'].str.split().str.len() <= 3).sum()
+    
+    print(f"Documents containing 'th': {th_count} ({th_count/len(df)*100:.2f}%)")
+    print(f"Empty documents: {empty_count} ({empty_count/len(df)*100:.2f}%)")
+    print(f"Documents with 3 or fewer tokens: {short_count} ({short_count/len(df)*100:.2f}%)")
+    
+    # Remove empty previews
+    empty_previews = df[df['processed_preview'].isna() | (df['processed_preview'] == '')]
+    df.drop(empty_previews.index, inplace=True)
+    
+    return df
 
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        '''
-        Remove stopwords from the list of tokens.
-        Example: remove_stopwords(['the', 'cat', 'is', 'on', 'the', 'mat']) -> ['cat', 'mat']
-        '''
-        return X.apply(lambda tokens: [token for token in tokens if token not in self.stopwords])
-
-class Lemmatizer(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        '''
-        Initialize the WordNetLemmatizer.
-        '''
-        self.lemmatizer = WordNetLemmatizer()
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        '''
-        Lemmatize the tokens: convert to their base form.
-        Example: lemmatize('running') -> 'run' or lemmatize('better') -> 'good'
-        '''
-        return X.apply(lambda tokens: [self.lemmatizer.lemmatize(token) for token in tokens])
-
-class Stemmer(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        '''
-        Initialize the SnowballStemmer for English
-        '''
-        self.stemmer = SnowballStemmer("english")
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        '''
-        Apply stemming to the tokens: reduce to their root form.
-        Example: stem('wars') -> 'was' or stem('mother') -> 'moth'
-        '''
-        return X.apply(lambda tokens: [self.stemmer.stem(token) for token in tokens])
-
-class JoinTokens(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        '''
-        Join the tokens back into a single string.
-        '''
-        return X.apply(lambda tokens: ' '.join(tokens))
+if __name__ == "__main__":
+    print("This script is designed to be imported as a module.")
